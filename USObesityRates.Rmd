@@ -1,0 +1,144 @@
+---
+title: "Predicting Obesity Rates in the U.S."
+author: "Claire Adair"
+date: "July 18, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introductory Explanation
+
+I have attempted to understand the correlates of obesity rates in the U.S., using county information published by the CDC and U.S. Census Bureau data to assist in feature engineering. Unfortunately, I spent a lot of my time searching for suitable data for other ideas and only came upon data for this project near the deadline, so feel less confident about my results and predictive model given time restraints.
+
+The datasets I used are as follows: CDC Community Health Status Indicators (CHSI) to Combat Obesity, Heart Disease and Cancer; US Census Bureau Population by County.
+
+```{r organize datasets}
+library(dplyr)
+healthFactors <- read.csv("RISKFACTORSANDACCESSTOCARE.csv")
+View(healthFactors)
+
+# Erase columns deemed arbitrary and assign to new dataframe
+countyHealth <- healthFactors[,-c(1, 2, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 23, 24)]
+View(countyHealth)
+
+# Read in population by county data
+countyPop <- read_csv("http://www.census.gov/popest/data/counties/totals/2015/files/CO-EST2015-alldata.csv")
+View(countyPop)
+
+# Delete all rows that designate county as state, to make countyHealth and countyPop compatible
+countyPop <- countyPop[-c(1, 69, 77, 99, 115, 191, 250, 315, 324, 328, 330, 398, 558, 564, 609, 712, 805, 905, 1011, 1132, 1197, 1214, 1239, 1254, 1338, 1426, 1509, 1625, 1682, 1776, 1794, 1805, 1827, 1861, 1924, 2025, 2079, 2168, 2246, 2283, 2351, 2357, 2404, 2471, 2567, 2822, 2852, 2867, 3001, 3041, 3097, 3170),]
+countyPop <- countyPop[,c("POPESTIMATE2015")]
+
+# Add population column to countyHealth dataframe to calculate percent of uninsured population 
+(countyHealth <- cbind(countyHealth, countyPop))
+View(countyHealth)
+
+# Tidy up the columns
+countyHealth <- countyHealth[, -c(18, 19)]
+countyHealth <- countyHealth[, -c(17)]
+
+# Create new variable, percentage of population uninsured, and add to countyHealth dataframe
+percentUninsured <- countyHealth$Uninsured / countyHealth$POPESTIMATE2015
+View(percentUninsured)
+countyHealth <- cbind(countyHealth, percentUninsured)
+
+# Delete "Uninsured" column and last two unecessary columns
+countyHealth <- countyHealth[, -c(9, 14:16)]
+View(countyHealth)
+
+# Remove all rows whose Obesity value is -1111.1
+class(countyHealth$Obesity)
+(countyHealth[!(countyHealth$Obesity == -1111.1),])
+countyHealth <- countyHealth[!(countyHealth$Obesity == -1111.1),]
+
+# Replace all -1111.1 values with NA
+countyHealth[countyHealth == -1111.1] = NA
+```
+
+## Cross-Validation
+
+Given that there are no variables that include averages--rather all values are hard percentages and discrete values or factor variables--, I considered no need to bootstrap the data.
+
+Next, I split the data into training and testing sets for assessing the accuracy of my model.
+
+```{r split data}
+# Split data into training and testing sub-datasets
+smp_size <- floor(0.80 * nrow(countyHealth))
+train_ind <- sample(seq_len(nrow(countyHealth)), size = smp_size)
+train <- countyHealth[train_ind, ]
+test <- countyHealth[-train_ind, ]
+```
+
+## Testing Significance of Variable Relationships
+
+In order to determine which variables are of significance to the model to predict obesity rates, I looked at pairwise relationships between Obesity (as the dependent variable) and other variables in the data frame.
+
+```{r assess relationships, echo=FALSE}
+library(ggplot2)
+
+pairs(countyHealth)
+
+# Look at pairwise relationships to distinguish which ones to further remove
+plot(Obesity ~ No_Exercise, data = countyHealth)
+plot(Obesity ~ Few_Fruit_Veg, data = countyHealth)
+plot(Obesity ~ High_Blood_Pres, data = countyHealth)
+plot(Obesity ~ Smoker, data = countyHealth)
+plot(Obesity ~ Diabetes, data = countyHealth)
+plot(Obesity ~ Elderly_Medicare, data = countyHealth)
+plot(Obesity ~ Disabled_Medicare, data = countyHealth)
+plot(Obesity ~ Prim_Care_Phys_Rate, data = countyHealth)
+plot(Obesity ~ Dentist_Rate, data = countyHealth)
+plot(Obesity ~ percentUninsured, data = countyHealth)
+```
+
+## Going forward to build a model
+
+It appears that the following variables have little correlation with obesity rates: 
+Elderly Medicare, Disabled Medicare, Primary Care Physician Rate, Dentist Rate, and Percentage of Population Uninsured.
+
+As a result, we will remove these variables when building and applying the predictive model.
+
+``` {r remove variables and build model, echo=FALSE}
+
+countyHealth <- countyHealth[, -c(9:13)]
+
+# Factor the state names to see obesity rates by state
+factor(countyHealth$CHSI_State_Name)
+boxplot(Obesity ~ CHSI_State_Name, data = countyHealth)
+# Seems that obesity rates vary by state, so we might factor this factor variable into our
+# decision tree
+
+# Remove county names, as these are abitrary
+countyHealth <- countyHealth[, -c(1)]
+
+# Use rpart to train with 5 folds
+library(readr)
+library(rpart)
+countyHealth.rpart <- train(Obesity ~ ., data = countyHealth, method = "rpart", 
+                            trControl = trainControl(method = "cv", 
+                                                     verboseIter = TRUE, 
+                                                     number = 5))
+countyHealth.rpart
+countyHealth.rpart$results
+
+# Build a decision tree with relevant variables using rpart
+library(party)
+library(caret)
+library(vcdExtra)
+
+(countyHealth.rpart <- rpart(Obesity ~ ., data = countyHealth, control = rpart.control(cp = 0.015)))
+
+train(Obesity ~ .,  data = countyHealth, method = "ctree")
+
+countyHealth.rpart <- train(Obesity ~ ., data = countyHealth, method = "rpart")
+plot(countyHealth.rpart)
+countyHealth.rpart$finalModel
+plot(countyHealth.rpart$finalModel)
+
+predictObesity <- lm(Obesity ~ ., data = countyHealth)
+
+predictions <- predict(predictObesity, newdata = test)
+predictions
